@@ -434,6 +434,15 @@ def preprocess(df, strct, mode, s_type=None):
     get_logger().info('Finish preprocess()')
     return df
 
+def drop_uneffect_feature(df):
+    """
+    Drop uneffective features from dataframe
+    """
+    for col in df.columns:
+        if len(df[col].unique()) == 1:
+            df.drop(col, axis=1, inplace=True)
+    return df
+
 """### fermi constant"""
 
 class CNTR:
@@ -525,14 +534,7 @@ def add_scc_feature(df, cntr_name, mode, s_type=None):
 """## Train"""
 
 df_train = pd.read_csv(TRAIN_PATH)
-df_train.head()
-
-"""Joint type:  
-1JHC, 1JHN, 2JHH, 2JHN, 3JHH, 3JHC, 3JHN
-"""
-
 df_strct = pd.read_csv(INPUT + 'structures.csv')
-df_strct.head()
 
 def train_single_model(df, strct):
     # TODO: back
@@ -554,15 +556,6 @@ def train_single_model(df, strct):
     joblib.dump(models, MODEL_PATH)
     
     return models, df_scores, df_pred
-
-def drop_uneffect_feature(df):
-    """
-    Drop uneffective features from dataframe
-    """
-    for col in df.columns:
-        if len(df[col].unique()) == 1:
-            df.drop(col, axis=1, inplace=True)
-    return df
 
 def train_models_each_type(df, strct):
     # TODO:back
@@ -628,42 +621,45 @@ imp.head(100)
 """## Predict"""
 
 df_test = pd.read_csv(TEST_PATH)
-df_test.head()
-
 df_strct = pd.read_csv(INPUT + 'structures.csv')
-df_strct.head()
 
-models = joblib.load(MODEL_PATH)
+def predict_single(df, strct):
+    models = joblib.load(MODEL_PATH)
 
-df_submit = df_test[['id']].copy()
-df_test = preprocess(df_test, df_strct, mode='predict')
-X = drop_col(df_test)
-display(X.head())
-
-X.to_csv('test_prepro.csv', index=False)
-
-y_pred = oof_predict(models, X)
+    df_submit = df[['id']].copy()
+    df = preprocess(df, strct, mode='predict')
+    X = drop_col(df)
+    display(X.head())
+    
+    X.to_csv('test_prepro.csv', index=False)
+    
+    y_pred = oof_predict(models, X)
+    df_submit['scalar_coupling_constant'] = y_pred
+    
+    return df_submit
 
 def predict_each_type(df, strct):
-    df = df.head(10000)
+    # df = df.head(10000)
     model_dict = joblib.load(MODEL_PATH)
     
+    s_type = df['type'].copy()
     df_submit = df[['id']].copy()
+    
     df = preprocess(df, strct, mode='predict')
     df = drop_col(df)    
     
-    s_type = df['type']
     coupling_types = s_type.unique()
     print(coupling_types)
     for coup_type in coupling_types:
+        
         models = model_dict[coup_type]
         
-        get_logger().info('Starting train model(%s)' % coup_type)
+        get_logger().info('Starting predict target(%s)' % coup_type)
         is_the_type = (s_type == coup_type)
         df_type = df[is_the_type]
                       
         X = df_type
-        X = drop_uneffect_feature(X)
+        X = drop_uneffect_feature(X)        
         
         display(X.head())  
         y_pred = oof_predict(models, X)        
@@ -674,9 +670,8 @@ def predict_each_type(df, strct):
     print((df_submit[TARGET].isnull()).sum())
     return df_submit
 
-predict_each_type(df_test, df_strct)
+df_submit = predict_each_type(df_test, df_strct)
 
-df_submit['scalar_coupling_constant'] = y_pred
 display(df_submit.head())
 df_submit.to_csv('submission.csv', index=False)
 

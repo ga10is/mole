@@ -111,6 +111,13 @@ def reduce_mem_usage(df, verbose=True):
     
     return df
 
+def divide_type(df):    
+    df['type_0'] = df['type'].apply(lambda x: x[0]).astype(np.uint8)
+    df['type_1'] = df['type'].apply(lambda x: x[1:])
+    return df
+
+df_train = divide_type(df_train)
+
 """## EDA + Preprocess"""
 
 df_train = pd.read_csv(TRAIN_PATH)
@@ -172,13 +179,6 @@ def calc_dist(df):
 # df_train = map_atom_info(df_train, df_strct, 0)
 # df_train = map_atom_info(df_train, df_strct, 1)
 # df_train = calc_dist(df_train)
-
-def divide_type(df):    
-    df['type_0'] = df['type'].apply(lambda x: x[0]).astype(np.uint8)
-    df['type_1'] = df['type'].apply(lambda x: x[1:])
-    return df
-
-df_train = divide_type(df_train)
 
 if RUN_PLOT:
     fig, ax  = plt.subplots(figsize=(10, 4))
@@ -285,6 +285,16 @@ if RUN_PLOT:
 
 """## calculate angel"""
 
+# merge train and test set
+df_train = pd.read_csv(TRAIN_PATH)
+df_test = pd.read_csv(TEST_PATH)
+
+df_all = pd.concat([df_train, df_test], axis=0, ignore_index=True)
+df_all = df_all[df_train.columns]
+df_all = divide_type(df_all)
+display(df_all.head())
+display(df_all.tail())
+
 def get_adjacent_mat(df):
     """
     Parameters
@@ -303,20 +313,31 @@ def get_adjacent_mat(df):
     mat += mat.transpose(1, 0)
     return mat
 
-df_bonds = pd.read_csv(PREPROCESS + 'train_bonds.csv')
-df_charges = pd.read_csv(PREPROCESS + 'train_charges.csv')
+def read_bonds():
+    train_bond = pd.read_csv(PREPROCESS + 'train_bonds.csv')
+    test_bond = pd.read_csv(PREPROCESS + 'test_bonds.csv')
+    
+    df = pd.concat([train_bond, test_bond], axis=0, ignore_index=True)
+    df.drop(['Unnamed: 0', 'L2dist'], axis=1, inplace=True)
+    
+    return df
+
+df_bonds = read_bonds()
+# df_charges = pd.read_csv(PREPROCESS + 'train_charges.csv')
 
 display(df_bonds.head())
-display(df_charges.head())
+display(df_bonds.tail())
 
-df_2j = df_train[df_train['type_0'] == 2]
+df_2j = df_all[df_all['type_0'] == 2]
 display(df_2j.head())
-df_3j = df_train[df_train['type_0'] == 3]
+df_3j = df_all[df_all['type_0'] == 3]
 display(df_3j.head())
 
 groups = df_bonds.groupby('molecule_name')
 adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
 adj_mat2 = {name: np.matmul(mat, mat) for name, mat in adj_mat.items()}
+
+joblib.dump(adj_mat, 'adj_mat.pkl')
 
 display(df_2j[df_2j.index==104493])
 # print(df_2j.iloc[104493, :])
@@ -517,12 +538,12 @@ def get_cos_3j(df, strct):
     
     return ret
 
-'''
 df_2j['center_index'] = df_2j[['molecule_name', 'atom_index_0', 'atom_index_1']].apply(get_intercept_atom_2j, adjacent_matrix=adj_mat, axis=1)
 display(df_2j.head())
 df_2jsim = get_cos_2j(df_2j, df_strct)
 df_2jsim.head()
-'''
+
+joblib.dump(df_2jsim, 'df_2jsim.pkl')
 
 # tmp = df_3j[['molecule_name', 'atom_index_0', 'atom_index_1']].head(1000)
 tmp2 = df_3j[['molecule_name', 'atom_index_0', 'atom_index_1']].apply(get_intercept_atom_3j, 
@@ -543,8 +564,6 @@ df_3jsim.tail()
 
 df_3jsim.head()
 
-joblib.dump(df_2jsim, 'df_2jsim.pkl')
-
 joblib.dump(df_3jsim, 'df_3jsim.pkl')
 
 df_bonds[dtmf_bonds['molecule_name'] == 'dsgdb9nsd_000007']
@@ -560,41 +579,3 @@ df_2jsim.to_csv('2j_center_atom.csv', index=False)
 
 (df_2jsim['sim_2j'].isnull()).sum()
 
-
-
-def reorder(x):
-    """
-    Parameters
-    ----------
-    x: str
-        <idx0>_<idx1>
-    """
-    idx0, idx1 = x.split('_')
-    idx0, idx1 = int(idx0), int(idx1)
-    if idx0 > idx1:
-        key_str = str(idx1) + '_' + str(idx0)
-        return key_str
-    else:
-        return x        
-        
-def merge_bonds(df, bonds):    
-    
-    df['key'] = df['atom_index_0'].astype(str) + '_' + df['atom_index_1'].astype(str)
-    bonds['key'] = bonds['atom_index_0'].astype(str) + '_' + bonds['atom_index_1'].astype(str)
-
-    df_train['key'] = df_train['key'].transform(reorder)
-    df_bonds['key'] = df_bonds['key'].transform(reorder)
-    
-    key_cols = ['molecule_name', 'key']
-    # TODO: add bond_type col
-    df = df.merge(bonds[key_cols + ['nbond', 'error']], how='left', on=key_cols)
-    display(df.head())
-    print((df['nbond'].notnull()).sum())
-
-    del df['key']
-    
-    return df
-
-# df_train = merge_bonds(df_train, df_bonds)
-
-"""TODO:  why is # of rows of df_bonds different from # of not null rows of  df_train after merge"""
