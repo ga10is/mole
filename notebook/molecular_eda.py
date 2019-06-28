@@ -116,12 +116,33 @@ def divide_type(df):
     df['type_1'] = df['type'].apply(lambda x: x[1:])
     return df
 
-df_train = divide_type(df_train)
+def map_atom_info(df, strct, atom_idx):
+    df = pd.merge(df, strct, how = 'left',
+                  left_on  = ['molecule_name', f'atom_index_{atom_idx}'],
+                  right_on = ['molecule_name',  'atom_index'])
+    
+    df = df.drop('atom_index', axis=1)
+    df = df.rename(columns={'atom': f'atom_{atom_idx}',
+                            'x': f'x_{atom_idx}',
+                            'y': f'y_{atom_idx}',
+                            'z': f'z_{atom_idx}'})
+    return df
+
+def calc_dist(df):
+    p_0 = df[['x_0', 'y_0', 'z_0']].values
+    p_1 = df[['x_1', 'y_1', 'z_1']].values
+
+    df['dist'] = np.linalg.norm(p_0 - p_1, axis=1)
+    df['dist_x'] = (df['x_0'] - df['x_1']) ** 2
+    df['dist_y'] = (df['y_0'] - df['y_1']) ** 2
+    df['dist_z'] = (df['z_0'] - df['z_1']) ** 2
+
+    return df
 
 """## EDA + Preprocess"""
 
 df_train = pd.read_csv(TRAIN_PATH)
-df_train.head()
+df_train = divide_type(df_train)
 
 df_train['type'].unique()
 
@@ -152,29 +173,6 @@ len(df_strct['molecule_name'].unique())
 
 # max of the number of atoms in a molecule
 df_strct['atom_index'].max()
-
-def map_atom_info(df, strct, atom_idx):
-    df = pd.merge(df, strct, how = 'left',
-                  left_on  = ['molecule_name', f'atom_index_{atom_idx}'],
-                  right_on = ['molecule_name',  'atom_index'])
-    
-    df = df.drop('atom_index', axis=1)
-    df = df.rename(columns={'atom': f'atom_{atom_idx}',
-                            'x': f'x_{atom_idx}',
-                            'y': f'y_{atom_idx}',
-                            'z': f'z_{atom_idx}'})
-    return df
-
-def calc_dist(df):
-    p_0 = df[['x_0', 'y_0', 'z_0']].values
-    p_1 = df[['x_1', 'y_1', 'z_1']].values
-
-    df['dist'] = np.linalg.norm(p_0 - p_1, axis=1)
-    df['dist_x'] = (df['x_0'] - df['x_1']) ** 2
-    df['dist_y'] = (df['y_0'] - df['y_1']) ** 2
-    df['dist_z'] = (df['z_0'] - df['z_1']) ** 2
-
-    return df
 
 # df_train = map_atom_info(df_train, df_strct, 0)
 # df_train = map_atom_info(df_train, df_strct, 1)
@@ -295,24 +293,6 @@ df_all = divide_type(df_all)
 display(df_all.head())
 display(df_all.tail())
 
-def get_adjacent_mat(df):
-    """
-    Parameters
-    ----------
-    df: pd.DataFrame
-        dataframe of a molecular
-    """
-    # edge is bond between atoms
-    edges = df[['atom_index_0', 'atom_index_1']].values    
-    edges = edges.transpose(1, 0)
-      
-    n_nodes = edges.max() + 1 
-    # adjacent matrix
-    mat = np.zeros((n_nodes, n_nodes), dtype=np.uint8)
-    mat[edges[0], edges[1]] = 1
-    mat += mat.transpose(1, 0)
-    return mat
-
 def read_bonds():
     train_bond = pd.read_csv(PREPROCESS + 'train_bonds.csv')
     test_bond = pd.read_csv(PREPROCESS + 'test_bonds.csv')
@@ -328,12 +308,76 @@ df_bonds = read_bonds()
 display(df_bonds.head())
 display(df_bonds.tail())
 
+df_1j = df_all[df_all['type_0'] == 1]
+display(df_1j.head())
+
 df_2j = df_all[df_all['type_0'] == 2]
 display(df_2j.head())
+
 df_3j = df_all[df_all['type_0'] == 3]
 display(df_3j.head())
 
+"""## get adjacent matrix"""
+
+def get_adjacent_mat(df):
+    """
+    Parameters
+    ----------
+    df: pd.DataFrame
+        dataframe of a molecular
+    """    
+    # edge is bond between atoms
+    edges = df[['atom_index_0', 'atom_index_1']].values    
+    edges = edges.transpose(1, 0)
+    
+    # the number of bonds
+    n_bonds = df['nbond'].values
+    
+    # the number of nodes may be max of atom index.
+    n_nodes = edges.max() + 1 
+    # initialize adjacent matrix
+    mat = np.zeros((n_nodes, n_nodes), dtype=np.uint8)
+    
+    # 1 bond
+    is_the_bond = (n_bonds == 1)
+    mat[edges[0][is_the_bond], edges[1][is_the_bond]] = 1
+    # 2 bond
+    is_the_bond = (n_bonds == 2)
+    mat[edges[0][is_the_bond], edges[1][is_the_bond]] = 2
+    # 3 bond
+    is_the_bond = (n_bonds == 3)
+    mat[edges[0][is_the_bond], edges[1][is_the_bond]] = 3
+    
+    mat += mat.transpose(1, 0)
+    
+    return mat
+
+groups = df_bonds.head(50).groupby('molecule_name')
+adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
+
+def get_adjacent_mat_old(df):
+    """
+    Parameters
+    ----------
+    df: pd.DataFrame
+        dataframe of a molecular
+    """
+    # edge is bond between atoms
+    edges = df[['atom_index_0', 'atom_index_1']].values    
+    edges = edges.transpose(1, 0)
+    
+    # the number of bonds
+    n_bonds = df['nbond'].values
+      
+    n_nodes = edges.max() + 1 
+    # adjacent matrix
+    mat = np.zeros((n_nodes, n_nodes), dtype=np.uint8)
+    mat[edges[0], edges[1]] = 1
+    mat += mat.transpose(1, 0)
+    return mat
+
 groups = df_bonds.groupby('molecule_name')
+# groups.__iter__ returns (name, df_group)
 adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
 adj_mat2 = {name: np.matmul(mat, mat) for name, mat in adj_mat.items()}
 
@@ -342,6 +386,71 @@ joblib.dump(adj_mat, 'adj_mat.pkl')
 display(df_2j[df_2j.index==104493])
 # print(df_2j.iloc[104493, :])
 # df_2j[df_2j['molecule_name'] == 'dsgdb9nsd_004015']
+
+"""## some features for 1JHC, 1JHN
+1JHC is correlated with the hybridization of the C-H bonding orbital. sp3 sp2 sp
+"""
+
+def trans_bonds(s, adjacent_matrix):
+    """
+    Get the number of bonds of C or N from atom index.
+    
+    Parameters
+    ----------
+    s: pd.Series
+        s must have 'molecule_name', 'atom_index_1'
+    adjacent_matrix: dict
+    """
+    mole_name = s['molecule_name']
+    idx = s['atom_index_1']
+    n_bonds = (adjacent_matrix[mole_name][:, idx] > 0).sum()
+    
+    return n_bonds
+
+def some_1j(df_1j, strct, adjacent_matrix):
+    # get atom string(e.g., 'C') from atom_index
+    df_1j = map_atom_info(df_1j, strct, 0)
+    df_1j = map_atom_info(df_1j, strct, 1)
+    display(df_1j.head())
+    
+    assert (df_1j['atom_1']!='H').sum() == df_1j.shape[0], 'atom_index_1 is not an index column of C or N.'
+
+    df_1j['1j_nbonds'] = df_1j[['molecule_name', 'atom_index_1']].apply(trans_bonds, axis=1, adjacent_matrix=adjacent_matrix)
+    
+    ret = df_1j[['molecule_name', 'atom_index_0', 'atom_index_1', '1j_nbonds']]
+    display(ret.head())
+    return ret
+
+assert (df_1j['atom_1']!='H').sum() == df_1j.shape[0], 'atom_index_1 is not an index column of C or N.'
+
+df_1j.head()
+
+def trans_bonds(s, adjacent_matrix):
+    """
+    Get the number of bonds of C or N from atom index.
+    
+    Parameters
+    ----------
+    s: pd.Series
+        s must have 'molecule_name', 'atom_index_1'
+    adjacent_matrix: dict
+    """
+    mole_name = s['molecule_name']
+    idx = s['atom_index_1']
+    n_bonds = (adjacent_matrix[mole_name][:, idx] > 0).sum()
+    
+    return n_bonds
+
+df_1j['1j_nbonds'] = df_1j[['molecule_name', 'atom_index_1']].apply(trans_bonds, axis=1, adjacent_matrix=adj_mat)
+
+df_1j['1j_nbonds'].value_counts()
+
+tmp = df_1j[df_1j['type']=='1JHC']
+sns.boxplot(x='1j_nbonds', y=TARGET, data=tmp)
+
+joblib.dump(df_1j[['molecule_name', 'atom_index_0', 'atom_index_1', '1j_nbonds']], 'df_1j.pkl')
+
+"""## get intercept atoms and get some features"""
 
 def get_intercept_atom_2j(s, adjacent_matrix):
     mole_name, idx0, idx1 = s

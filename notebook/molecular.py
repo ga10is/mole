@@ -236,6 +236,16 @@ def feature_engineering(df):
     
     return df
 
+def add_1j(df):
+    get_logger().info('load df_1j')
+    
+    df_1j = joblib.load(PREPROCESS + 'df_1j.pkl')
+    
+    df = df.merge(df_1j, on=['molecule_name', 'atom_index_0', 'atom_index_1'], how='left') 
+    
+    return df
+
+
 def add_2j_center_atom(df):    
     get_logger().info('load df_2jsim')
     
@@ -352,6 +362,7 @@ def oof_train(_X, _y, _types):
         
         df_scores = df_scores.append(pd.Series([valid_score], index=['valid_score']), ignore_index=True)
         df_pred.loc[valid_idx, 'proba'] = y_pred
+        df_pred.loc[valid_idx, 'y_true'] = y_valid
         models.append(model)
         
         # TODO: back
@@ -406,6 +417,7 @@ def preprocess(df, strct, mode, s_type=None):
         If mode is 'train', the s_type must be specified.
     """
     get_logger().info('Start preprocess()')
+    df = add_1j(df)
     df = add_2j_center_atom(df)
     df = add_3j_center_atom(df)
     df = map_atom_info(df, strct, 0)
@@ -413,6 +425,9 @@ def preprocess(df, strct, mode, s_type=None):
     df = calc_dist(df)
     df = divide_type(df)
     df = feature_engineering(df)
+    
+    display(df.head(10))
+    display(df.tail(10))
     
     # encode
     if mode == 'train':
@@ -536,6 +551,9 @@ def add_scc_feature(df, cntr_name, mode, s_type=None):
 df_train = pd.read_csv(TRAIN_PATH)
 df_strct = pd.read_csv(INPUT + 'structures.csv')
 
+# TODO: remove
+# df_train = df_train[(df_train['type']=='1JHC') | (df_train['type']=='1JHN')]
+
 def train_single_model(df, strct):
     # TODO: back
     df = df.head(10000)
@@ -572,16 +590,15 @@ def train_models_each_type(df, strct):
     coupling_types = s_type.unique()
     for coup_type in coupling_types:
         get_logger().info('Starting train model(%s)' % coup_type)
-        is_the_type = (s_type == coup_type)
-        df_type = df[is_the_type]
-        
-
-        
+        is_the_type = (s_type == coup_type)        
+        df_type = df[is_the_type.values]
+                
         y = df_type[TARGET]
         df_type.drop([TARGET], axis=1, inplace=True)
         X = df_type
         X = drop_uneffect_feature(X)
         
+        get_logger().info('features(%s): %s' % (coup_type, str(X.columns.tolist())))
         display(X.head())
         display(y.head())
         models, df_scores, df_pred = oof_train(X, y, _types=s_type[is_the_type].reset_index(drop=True))
@@ -602,7 +619,7 @@ for _, df_score in score_dict.items():
 
 """### Check training result"""
 
-sns.distplot(df_pred['proba'])
+# sns.distplot(df_pred['proba'])
 
 def feat_importance(_models, _X, _imp_type='gain'):
     df_imp = pd.DataFrame(index=_X.columns)
@@ -615,8 +632,8 @@ def feat_importance(_models, _X, _imp_type='gain'):
     sorted_imp = df_imp.sort_values(by='imp_mean', ascending=False)
     return sorted_imp
 
-imp = feat_importance(models, X, _imp_type='gain')
-imp.head(100)
+# imp = feat_importance(model_dict['1JHC'], X, _imp_type='gain')
+# imp.head(100)
 
 """## Predict"""
 
