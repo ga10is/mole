@@ -39,8 +39,10 @@ MID_MODEL_PATH = PREPROCESS + 'middle_model.pkl'
 MODEL_PATH = PREPROCESS + 'model.pkl'
 ENCODER_PATH = PREPROCESS + 'le.pkl'
 
-RUN_PLOT = True
+USE_PREPROCESS_DATA = False
 TARGET = 'scalar_coupling_constant'
+MERGE_KEY = ['molecule_name', 'atom_index_0', 'atom_index_1']
+CONTR_COLS = ['fc', 'sd', 'pso', 'dso']
 N_FOLDS = 3
 
 atom_weight = {'H': 1.008, 'C': 12.01, 'N': 14.01, 'O':16.00}
@@ -135,6 +137,35 @@ def reduce_mem_usage(df, verbose=True):
     if verbose: 
         print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
     
+    return df
+
+def reduce_mem_usage_v2(df, verbose=True):
+    numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+    start_mem = df.memory_usage().sum() / 1024**2
+    for col in df.columns:
+        col_type = df[col].dtypes
+        if col_type in numerics:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == 'int':
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)
+            else:
+                c_prec = df[col].apply(lambda x: np.finfo(x).precision).max()
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max and c_prec == np.finfo(np.float16).precision:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max and c_prec == np.finfo(np.float32).precision:
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)
+    end_mem = df.memory_usage().sum() / 1024**2
+    if verbose: print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
     return df
 
 """## Preprocess"""
@@ -306,7 +337,7 @@ def add_3j_center_atom(df):
 def drop_col(df_org):
     df = df_org.copy()
     to_drop = ['id', 'molecule_name', 'atom_index_0', 'atom_index_1',
-               'x_0', 'y_0', 'z_0', 'x_1', 'y_1', 'z_1', #'dist_x', 'dist_y', 'dist_z',
+               'x_0', 'y_0', 'z_0', 'x_1', 'y_1', 'z_1', # 'dist_x', 'dist_y', 'dist_z',
                'atom_0', 'atom_1'
               ]
     df = df.drop(to_drop, axis=1)
@@ -318,10 +349,11 @@ def group_mean_log_mae(y_true, y_pred, types, floor=1e-9):
     Fast metric computation for this competition: https://www.kaggle.com/c/champs-scalar-coupling
     Code is from this kernel: https://www.kaggle.com/uberkinder/efficient-metric
     """
-    maes = (y_true-y_pred).abs().groupby(types).mean()
+    maes = (y_true-y_pred).abs().groupby(types).mean()    
     return np.log(maes.map(lambda x: max(x, floor))).mean()
 
-def oof_train(_X, _y, _types):
+def oof_train(X_org, y_org, _types):
+# def oof_train(_X, _y, _types):
     """
     Parameters
     ----------
@@ -333,6 +365,9 @@ def oof_train(_X, _y, _types):
     # TODO: divide data to training and validation about molecular
     
     models = []
+    # TODO: back
+    _X = X_org.copy().reset_index(drop=True)
+    _y = y_org.copy().reset_index(drop=True)
     df_scores = pd.DataFrame(columns=['valid_score'])
     df_pred = pd.DataFrame(index=_X.index).reset_index(drop=True)
 
@@ -385,16 +420,16 @@ def oof_predict(_models, _X):
 
 def gen_model(_X):
     n_features = _X.shape[1]
-    colsample_rate = max(0.7, math.sqrt(n_features)/n_features)
+    colsample_rate = max(0.1, math.sqrt(n_features)/n_features)
     
     _model = lgb.LGBMRegressor(
         learning_rate=0.2,
-        n_estimators=1500,
+        n_estimators=2000,
         num_leaves=128,
         # min_child_weight=15, # good value: 0, 5, 15, 300
         min_child_samples=80,
         subsample=0.7,
-        colsample_bytree=1, #colsample_rate,
+        colsample_bytree=1, # colsample_rate,
         objective='regression',
         reg_lambda=0.1,
         reg_alpha=0.1,
@@ -440,7 +475,7 @@ def preprocess(df, strct, mode, s_type=None):
         enc = joblib.load(ENCODER_PATH)
     df = enc.transform(df)
         
-    use_features = [col for col in df.columns if col not in [TARGET]]
+    use_features = [col for col in df.columns if col not in [TARGET, *CONTR_COLS]] #'fc', 'sd', 'dso', 'pso']]
     get_logger().info(use_features)
     df[use_features] = reduce_mem_usage(df[use_features])
     # TODO: back
@@ -490,7 +525,7 @@ class CNTR:
         models, scores, y_pred = oof_train(X, y, s_type)
         
         # save model
-        joblib.dump(models, MID_MODEL_PATH)
+        joblib.dump(models, MID_MODEL_PATH, compress=3)
         
         self.models_ = models
         self.scores_ = scores
@@ -571,19 +606,87 @@ def train_single_model(df, strct):
     display(y.head())
     models, df_scores, df_pred = oof_train(X, y, s_type)
 
-    joblib.dump(models, MODEL_PATH)
+    joblib.dump(models, MODEL_PATH, compress=3)
     
     return models, df_scores, df_pred
 
-def train_models_each_type(df, strct):
+class LGBM:
+    def __init__(self, target_col):
+        self.target_col = target_col
+        self.model_dict = {}
+        self.score_dict = {}
+        self.pred_dict = {}
+    
+    def train(self, df, s_type):
+        self.cols = df.columns.tolist()
+        
+        # TODO: back
+        coupling_types = s_type.unique()
+        # coupling_types = ['1JHC']
+        for coup_type in coupling_types:
+            get_logger().info('Starting train model(%s %s)' % (self.target_col, coup_type))
+            is_the_type = (s_type == coup_type)        
+            df_type = df[is_the_type.values]
+
+            y = df_type[self.target_col]
+            # df_type.drop([self.target_col], axis=1, inplace=True)
+            df_type.drop(CONTR_COLS + [TARGET], axis=1, inplace=True)
+            X = df_type
+            X = drop_uneffect_feature(X)
+
+            get_logger().info('features(%s): %s' % (coup_type, str(X.columns.tolist())))
+            display(X.head())
+            display(y.head())
+            models, df_scores, df_pred = oof_train(X, y, _types=s_type[is_the_type].reset_index(drop=True))
+
+            self.model_dict[coup_type] = models
+            self.score_dict[coup_type] = df_scores
+            self.pred_dict[coup_type] = df_pred                     
+    
+    def predict(self, df, s_type, df_submit):
+        # df = df.head(10000)        
+                
+        # coupling_types = ['1JHC']
+        coupling_types = s_type.unique()
+        print(coupling_types)
+        for coup_type in coupling_types:
+
+            models = self.model_dict[coup_type]
+
+            get_logger().info('Starting predict target(%s %s)' % (self.target_col, coup_type))
+            is_the_type = (s_type == coup_type)
+            df_type = df[is_the_type]
+
+            X = df_type
+            X = drop_uneffect_feature(X)        
+
+            display(X.head())  
+            y_pred = oof_predict(models, X)        
+
+            df_submit.loc[is_the_type, self.target_col] = y_pred        
+        
+        return df_submit
+
+def train_models_each_type(df, strct, use_preprocess_data):
     # TODO:back
-    # df = df.head(10000)
+    # df = df.head(100000)
     
-    s_type = df['type'].copy()
+    get_logger().info('Data size: %s' % str(df.shape))
     
-    df = preprocess(df, strct, mode='train', s_type=s_type)
-    df = drop_col(df)
+    if use_preprocess_data:
+        df = joblib.load(PREPROCESS + 'df_preprocessed.pkl')
+    else:
+        df_scc = pd.read_csv(INPUT + 'scalar_coupling_contributions.csv')
+        df = df.merge(df_scc[MERGE_KEY + CONTR_COLS], on=MERGE_KEY, how='left')    
+
+        s_type = df['type'].copy()
+
+        df = preprocess(df, strct, mode='train', s_type=s_type)
+        df = drop_col(df)
+        
+        joblib.dump(df, PREPROCESS + 'df_preprocessed.pkl', compress=3)
     
+    '''
     model_dict = {}
     score_dict = {}
     pred_dict = {}
@@ -606,16 +709,53 @@ def train_models_each_type(df, strct):
         model_dict[coup_type] = models
         score_dict[coup_type] = df_scores
         pred_dict[coup_type] = df_pred
-        
-    joblib.dump(model_dict, MODEL_PATH)
-    
     return model_dict, score_dict, pred_dict
+    '''
+    models = {}
+    for target in [TARGET]:# CONTR_COLS:
+    # for target in CONTR_COLS:
+        model = LGBM(target)
+        model.train(df, s_type)
+        models[target] = model
+        
+        model_file = 'model_%s.pkl' % target        
+        joblib.dump(model, model_file, compress=3)
+    
+    get_logger().info('validate sum of fc sd pso dso')
+    # coupling_types = ['1JHC']
+    coupling_types = s_type.unique()
+    for coup_type in coupling_types:
+        is_the_type = (s_type == coup_type)
+        y_true = df.loc[is_the_type, TARGET].values
+        
+        y_pred = np.zeros(len(y_true))
+        for target in [TARGET]: # CONTR_COLS:
+        # for target in CONTR_COLS:
+            model = models[target]
+            df_pred = model.pred_dict[coup_type]
+            y_pred += df_pred['proba'].values
+        
+        print(y_true[0:10])
+        print(y_pred[0:10])
+        
+        y_true = pd.Series(y_true)
+        y_pred = pd.Series(y_pred)
+        valid_score = group_mean_log_mae(y_true, y_pred, s_type)
+        get_logger().info('valid score(fc+sd+pso+dso %s): %f' % (coup_type, valid_score))
+    return models
 
 # models, df_scores, df_pred = train_single_model(df_train, df_strct)
-model_dict, score_dict, pred_dict = train_models_each_type(df_train, df_strct)
+models = train_models_each_type(df_train, df_strct, USE_PREPROCESS_DATA)
 
-for _, df_score in score_dict.items():
-    display(df_score.mean()[0])
+models[TARGET].pred_dict['1JHC'].head()
+
+score = 0
+for j_type, df_score in models[TARGET].score_dict.items():
+    print(j_type)    
+    score_each_type = np.mean(df_score.values)
+    print(score_each_type)
+    score += score_each_type / 8
+print(score)
 
 """### Check training result"""
 
@@ -656,8 +796,8 @@ def predict_single(df, strct):
     return df_submit
 
 def predict_each_type(df, strct):
-    # df = df.head(10000)
-    model_dict = joblib.load(MODEL_PATH)
+    df = df.head(10000)
+    # model_dict = joblib.load(MODEL_PATH)
     
     s_type = df['type'].copy()
     df_submit = df[['id']].copy()
@@ -665,6 +805,7 @@ def predict_each_type(df, strct):
     df = preprocess(df, strct, mode='predict')
     df = drop_col(df)    
     
+    '''
     coupling_types = s_type.unique()
     print(coupling_types)
     for coup_type in coupling_types:
@@ -682,6 +823,17 @@ def predict_each_type(df, strct):
         y_pred = oof_predict(models, X)        
         
         df_submit.loc[is_the_type, 'scalar_coupling_constant'] = y_pred
+    '''
+    
+    df_submit[TARGET] = 0
+    # for target in CONTR_COLS: # ['fc', 'sd', 'pso', 'dso']: 
+    for target in [TARGET]: 
+        get_logger().info('Start prediction: %s' % target)
+        model_file = 'model_%s.pkl' % target
+        model = joblib.load(model_file)
+                
+        df_submit_each_target = model.predict(df, s_type, df_submit)                              
+        df_submit[TARGET] += df_submit_each_target[target]
     
     display(df_submit.head())
     print((df_submit[TARGET].isnull()).sum())
@@ -690,7 +842,7 @@ def predict_each_type(df, strct):
 df_submit = predict_each_type(df_test, df_strct)
 
 display(df_submit.head())
-df_submit.to_csv('submission.csv', index=False)
+df_submit[['id', TARGET]].to_csv('submission.csv', index=False)
 
 df_submit.shape
 

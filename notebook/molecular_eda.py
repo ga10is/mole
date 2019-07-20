@@ -37,6 +37,7 @@ PREPROCESS = './analysis/mole/data/preprocess/'
 RUN_PLOT = False
 TARGET = 'scalar_coupling_constant'
 N_FOLDS = 4
+ATOM_W = {'H': 1.008, 'C': 12.01, 'N': 14.01, 'O': 16.00}
 
 """## logging"""
 
@@ -352,9 +353,6 @@ def get_adjacent_mat(df):
     
     return mat
 
-groups = df_bonds.head(50).groupby('molecule_name')
-adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
-
 def get_adjacent_mat_old(df):
     """
     Parameters
@@ -376,13 +374,14 @@ def get_adjacent_mat_old(df):
     mat += mat.transpose(1, 0)
     return mat
 
-groups = df_bonds.groupby('molecule_name')
+# groups = df_bonds.groupby('molecule_name')
 # groups.__iter__ returns (name, df_group)
-adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
+# adj_mat = {g[0]: get_adjacent_mat(g[1])  for g in tqdm(groups)}
+
+adj_mat = joblib.load(PREPROCESS + 'adj_mat.pkl')
 adj_mat2 = {name: np.matmul(mat, mat) for name, mat in adj_mat.items()}
 
-joblib.dump(adj_mat, 'adj_mat.pkl')
-
+# TODO: bug fix
 display(df_2j[df_2j.index==104493])
 # print(df_2j.iloc[104493, :])
 # df_2j[df_2j['molecule_name'] == 'dsgdb9nsd_004015']
@@ -443,12 +442,56 @@ def trans_bonds(s, adjacent_matrix):
 
 df_1j['1j_nbonds'] = df_1j[['molecule_name', 'atom_index_1']].apply(trans_bonds, axis=1, adjacent_matrix=adj_mat)
 
+"""%%time
+def add_neighbor_atoms(s, groups, adjacent_matrix):
+    # print(s)
+    cn_idx = s['atom_index_1']
+    h_idx = s['atom_index_0']
+    mole_name = s['molecule_name']
+    # print(h_idx)
+    # print(cn_idx)
+    
+    neighbor_tf = adjacent_matrix[mole_name][cn_idx] > 0
+    neighbor_tf[h_idx] = False
+    
+    # print(neighbor_tf)
+    
+    mole_group = mole_groups.get_group(mole_name)
+    neighbor_atoms = mole_group.loc[neighbor_tf, 'atom']
+    neighbor_atoms.values.sort()
+    neighbor_atoms_str = ''.join(neighbor_atoms)
+    
+    # print(neighbor_atoms_str)
+    return neighbor_atoms_str
+
+mole_groups = df_strct.groupby(by='molecule_name')
+df_1j['neighbor_atoms'] = df_1j[['molecule_name', 'atom_index_0', 'atom_index_1']].apply(add_neighbor_atoms, groups=mole_groups, adjacent_matrix=adj_mat, axis=1)
+"""
+
+def add_neighbor_weight(atom_str):
+    return sum([ATOM_W[c] for c in atom_str])
+    
+df_1j['neighbor_weight'] = df_1j['neighbor_atoms'].transform(add_neighbor_weight)
+
+df_1j.head(100)
+
 df_1j['1j_nbonds'].value_counts()
 
 tmp = df_1j[df_1j['type']=='1JHC']
 sns.boxplot(x='1j_nbonds', y=TARGET, data=tmp)
 
-joblib.dump(df_1j[['molecule_name', 'atom_index_0', 'atom_index_1', '1j_nbonds']], 'df_1j.pkl')
+tmp = df_1j[(df_1j['type']=='1JHC') & (df_1j['1j_nbonds']==4)]
+sns.boxplot(x='neighbor_atoms', y=TARGET, data=tmp)
+# sns.scatterplot(x='neighbor_weight', y=TARGET, data=tmp)
+
+sns.scatterplot(x='neighbor_weight', y=TARGET, data=tmp)
+
+joblib.dump(df_1j[['molecule_name', 'atom_index_0', 'atom_index_1', '1j_nbonds', 'neighbor_atoms', 'neighbor_weight']], 'df_1j.pkl')
+
+df_1j_dash = joblib.load('df_1j.pkl')
+
+df_1j = df_1j.merge(df_1j_dash, on=['molecule_name', 'atom_index_0', 'atom_index_1'], how='left')
+df_1j.head()
 
 """## get intercept atoms and get some features"""
 
